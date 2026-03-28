@@ -2,9 +2,9 @@ import os
 import time
 import telebot
 import threading
-from telebot import types, apihelper
+from telebot import types
 from fyers_apiv3 import fyersModel
-from flask import Flask  # Render ke liye zaroori
+from flask import Flask
 
 # --- 1. CONFIGURATION ---
 TOKEN = '8644451164:AAGt-2CZBGAm0ETpR-2xluuIYyJ0y2QsKKU'
@@ -14,23 +14,23 @@ CHAT_ID = '944397272'
 REDIRECT_URI = 'https://trade.fyers.in/api-login/redirect-uri/index.html'
 TOKEN_FILE = "fyers_token.txt"
 
-# --- RENDER WEB SERVER ---
+# Render ke liye Flask Server (Health Check)
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Fyers Trading Bot is Alive!"
+    return "Fyers Bot is Running 24/7!"
 
-def run_web_server():
+def run_server():
+    # Render assigns a port automatically
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# PythonAnywhere Proxy fix hataya gaya hai (Render par zaroorat nahi hai)
+# Proxy Fix Hataya Gaya Hai (Render ke liye zaroorat nahi)
 bot = telebot.TeleBot(TOKEN)
 fyers = None
 
-# [Baaki saari functions: pro_menu, save_token, load_token, get_momentum_stocks, exit_all_positions wahi rahegi jo aapke code mein thi]
-
+# --- UI: CONTROL PANEL BUTTONS ---
 def pro_menu():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     btn1 = types.KeyboardButton('🚀 Pick Stocks')
@@ -42,6 +42,7 @@ def pro_menu():
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
     return markup
 
+# --- TOKEN HELPERS ---
 def save_token(t):
     with open(TOKEN_FILE, "w") as f: f.write(t)
 
@@ -50,6 +51,7 @@ def load_token():
         with open(TOKEN_FILE, "r") as f: return f.read().strip()
     return None
 
+# --- 2. LOGIC FUNCTIONS ---
 def get_momentum_stocks():
     watchlist = ["NSE:RELIANCE-EQ", "NSE:SBIN-EQ", "NSE:HDFCBANK-EQ", "NSE:ICICIBANK-EQ", "NSE:TCS-EQ"]
     selected = []
@@ -83,7 +85,7 @@ def exit_all_positions():
         return "ℹ️ Koi open position nahi mili."
     except Exception as e: return f"❌ Error: {str(e)}"
 
-# --- TELEGRAM HANDLERS ---
+# --- 3. TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['start'])
 def welcome(m):
     bot.send_message(CHAT_ID, "🚀 Pro Trading Bot Active on Render!\nNiche diye gaye buttons use karein:", reply_markup=pro_menu())
@@ -92,10 +94,12 @@ def welcome(m):
 def handle_all_messages(message):
     global fyers
     text = message.text
+
     if text == '🚀 Pick Stocks':
         stocks = get_momentum_stocks()
         msg = "🎯 **Momentum Stocks:**\n\n" + "\n".join(stocks) if stocks else "😴 Market Shant Hai."
         bot.send_message(CHAT_ID, msg, reply_markup=pro_menu())
+
     elif text == '💰 Balance' or text == '👤 Profile':
         if fyers:
             try:
@@ -105,16 +109,19 @@ def handle_all_messages(message):
                 bot.send_message(CHAT_ID, msg, reply_markup=pro_menu())
             except: bot.send_message(CHAT_ID, "❌ Data Fetch Error.", reply_markup=pro_menu())
         else: bot.send_message(CHAT_ID, "❌ Login Required.", reply_markup=pro_menu())
+
     elif text == '📈 Live P&L':
         if fyers:
             pos = fyers.positions()
             pnl = pos.get('overall', {}).get('pl_total', 0) if pos['s'] == 'ok' else "N/A"
             bot.send_message(CHAT_ID, f"📊 **Total Live P&L**: ₹{pnl}", reply_markup=pro_menu())
         else: bot.send_message(CHAT_ID, "❌ Not Connected.", reply_markup=pro_menu())
+
     elif text == '🚨 EXIT ALL':
         bot.send_message(CHAT_ID, "⚠️ Alert! Closing all positions...")
         msg = exit_all_positions()
         bot.send_message(CHAT_ID, msg, reply_markup=pro_menu())
+
     elif text == '🔗 Login Link':
         session = fyersModel.SessionModel(
             client_id=APP_ID, secret_key=SECRET_KEY,
@@ -145,10 +152,10 @@ def connect_fyers(m):
 
 # --- MAIN START ---
 if __name__ == "__main__":
-    # 1. Start Web Server in Background
-    threading.Thread(target=run_web_server).start()
-    
-    # 2. Auto Login check
+    # 1. Start Flask server in background for Render
+    threading.Thread(target=run_server).start()
+
+    # 2. Auto-login try
     st = load_token()
     if st:
         try:
