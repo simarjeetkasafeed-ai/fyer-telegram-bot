@@ -1,0 +1,4 @@
+pyTelegramBotAPI
+fyers-apiv3
+flask
+gunicorn
