@@ -6,17 +6,18 @@ from telebot import types
 from fyers_apiv3 import fyersModel
 from flask import Flask
 
-# --- 1. CONFIGURATION ---
-TOKEN = '8644451164:AAH75tUUN7ljuxu55hx7Ek11osb1EEi4bmw'
+# --- 1. CONFIGURATION (UPDATED) ---
+TOKEN = '8644451164:AAElOSx3cYqrxUzBeUCxr-PT5oE9yVgFBGY'
 APP_ID = 'CI0NFNURCW-100' 
 SECRET_KEY = 'H7RXH9IXJT'
+CHAT_ID = '944397272'
 REDIRECT_URI = 'https://trade.fyers.in/api-login/redirect-uri/index.html'
 TOKEN_FILE = "fyers_token.txt"
 
 # Render Health Check Server
 app = Flask('')
 @app.route('/')
-def home(): return "Fyers Bot is Active!"
+def home(): return "Fyers Bot is Active and Secure!"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -28,12 +29,9 @@ fyers = None
 # --- UI: BUTTONS ---
 def pro_menu():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton('🚀 Pick Stocks')
-    btn2 = types.KeyboardButton('💰 Balance')
-    btn3 = types.KeyboardButton('📈 Live P&L')
-    btn4 = types.KeyboardButton('👤 Profile')
-    btn5 = types.KeyboardButton('🚨 EXIT ALL')
-    btn6 = types.KeyboardButton('🔗 Login Link')
+    btn1, btn2 = types.KeyboardButton('🚀 Pick Stocks'), types.KeyboardButton('💰 Balance')
+    btn3, btn4 = types.KeyboardButton('📈 Live P&L'), types.KeyboardButton('👤 Profile')
+    btn5, btn6 = types.KeyboardButton('🚨 EXIT ALL'), types.KeyboardButton('🔗 Login Link')
     markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
     return markup
 
@@ -76,77 +74,59 @@ def exit_all_positions():
         return "ℹ️ Koi open position nahi mili."
     except Exception as e: return f"❌ Error: {str(e)}"
 
-# --- TELEGRAM HANDLERS (DYNAMIC ID) ---
+# --- TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['start'])
 def welcome(m):
-    bot.send_message(m.chat.id, "🚀 Bot Active on Render!\nNiche diye gaye buttons use karein:", reply_markup=pro_menu())
+    bot.send_message(CHAT_ID, "🚀 Pro Bot Started with New Token!\nSystem Active on Render.", reply_markup=pro_menu())
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     global fyers
+    if str(message.chat.id) != CHAT_ID: return # Security: Only you can use it
+    
     text = message.text
-    cid = message.chat.id
-
     if text == '🚀 Pick Stocks':
         stocks = get_momentum_stocks()
         msg = "🎯 **Momentum Stocks:**\n\n" + "\n".join(stocks) if stocks else "😴 Market Shant Hai."
-        bot.send_message(cid, msg, reply_markup=pro_menu())
-
+        bot.send_message(CHAT_ID, msg)
     elif text == '💰 Balance' or text == '👤 Profile':
         if fyers:
             try:
                 p = fyers.get_profile()['d']
                 f = fyers.funds()['fund_limit'][0]
-                msg = f"👤 **User**: {p['display_name']}\n💰 **Margin**: ₹{f['equityAmount']}"
-                bot.send_message(cid, msg, reply_markup=pro_menu())
-            except: bot.send_message(cid, "❌ Data Fetch Error.", reply_markup=pro_menu())
-        else: bot.send_message(cid, "❌ Login Required.", reply_markup=pro_menu())
-
+                bot.send_message(CHAT_ID, f"👤 **User**: {p['display_name']}\n💰 **Margin**: ₹{f['equityAmount']}")
+            except: bot.send_message(CHAT_ID, "❌ Data Fetch Error.")
+        else: bot.send_message(CHAT_ID, "❌ Login Required.")
     elif text == '📈 Live P&L':
         if fyers:
             pos = fyers.positions()
             pnl = pos.get('overall', {}).get('pl_total', 0) if pos['s'] == 'ok' else "N/A"
-            bot.send_message(cid, f"📊 **Total Live P&L**: ₹{pnl}", reply_markup=pro_menu())
-        else: bot.send_message(cid, "❌ Not Connected.", reply_markup=pro_menu())
-
+            bot.send_message(CHAT_ID, f"📊 **Total Live P&L**: ₹{pnl}")
+        else: bot.send_message(CHAT_ID, "❌ Not Connected.")
     elif text == '🚨 EXIT ALL':
-        bot.send_message(cid, "⚠️ Closing all positions...")
-        msg = exit_all_positions()
-        bot.send_message(cid, msg, reply_markup=pro_menu())
-
+        bot.send_message(CHAT_ID, "⚠️ Closing all positions...")
+        bot.send_message(CHAT_ID, exit_all_positions())
     elif text == '🔗 Login Link':
         session = fyersModel.SessionModel(client_id=APP_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type='code', grant_type='authorization_code')
-        bot.send_message(cid, f"🔗 Click to Login:\n{session.generate_authcode()}")
+        bot.send_message(CHAT_ID, f"🔗 Click to Login:\n{session.generate_authcode()}")
 
 @bot.message_handler(commands=['connect'])
 def connect_fyers(m):
     global fyers
-    cid = m.chat.id
     try:
-        args = m.text.split()
-        if len(args) < 2:
-            bot.send_message(cid, "⚠️ Format: /connect <your_auth_code>")
-            return
-
-        auth_code = args[1]
+        auth_code = m.text.split()[1]
         session = fyersModel.SessionModel(client_id=APP_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type='code', grant_type='authorization_code')
         session.set_token(auth_code)
-        
-        # Token Generation
         res = session.generate_access_token()
-        print(f"DEBUG: Fyers Response -> {res}") # Render Logs mein dikhega
-
+        
         if res.get('s') == 'ok':
             tk = res.get('access_token')
             save_token(tk)
             fyers = fyersModel.FyersModel(client_id=APP_ID, token=tk, log_path="")
-            bot.send_message(cid, "✅ BINGO! Pro Bot Connected.", reply_markup=pro_menu())
+            bot.send_message(CHAT_ID, "✅ BINGO! Pro Bot Connected.")
         else:
-            # Fyers ne error diya
-            error_reason = res.get('message', 'Unknown Error')
-            bot.send_message(cid, f"❌ Connection Fail: {error_reason}\n\nCheck if App ID/Secret is correct.")
-    except Exception as e:
-        bot.send_message(cid, f"⚠️ Script Error: {str(e)}")
+            bot.send_message(CHAT_ID, f"❌ Fail: {res.get('message', 'Check App ID/Secret')}")
+    except: bot.send_message(CHAT_ID, "⚠️ Format: /connect <code_yahan>")
 
 if __name__ == "__main__":
     threading.Thread(target=run_server).start()
@@ -155,7 +135,7 @@ if __name__ == "__main__":
         try:
             fyers = fyersModel.FyersModel(client_id=APP_ID, token=st, log_path="")
             if fyers.get_profile().get('s') == 'ok': print("Auto-login success")
-        except: print("Auto-login failed")
+        except: print("Token expired")
     
     print("Bot is starting...")
-    bot.infinity_polling()
+    bot.infinity_polling(skip_pending=True)
