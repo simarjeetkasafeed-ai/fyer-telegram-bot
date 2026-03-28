@@ -6,18 +6,18 @@ from telebot import types
 from fyers_apiv3 import fyersModel
 from flask import Flask
 
-# --- 1. CONFIGURATION (UPDATED) ---
+# --- 1. CONFIGURATION (CLEANED) ---
 TOKEN = '8644451164:AAElOSx3cYqrxUzBeUCxr-PT5oE9yVgFBGY'
-APP_ID = 'CI0NFNURCW-100' 
+APP_ID = 'CI0NFNURCW-100'
 SECRET_KEY = 'H7RXH9IXJT'
 CHAT_ID = '944397272'
 REDIRECT_URI = 'https://trade.fyers.in/api-login/redirect-uri/index.html'
 TOKEN_FILE = "fyers_token.txt"
 
-# Render Health Check Server
+# Render Health Check
 app = Flask('')
 @app.route('/')
-def home(): return "Fyers Bot is Active and Secure!"
+def home(): return "Bot is Online!"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -26,16 +26,14 @@ def run_server():
 bot = telebot.TeleBot(TOKEN)
 fyers = None
 
-# --- UI: BUTTONS ---
+# --- UI BUTTONS ---
 def pro_menu():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1, btn2 = types.KeyboardButton('🚀 Pick Stocks'), types.KeyboardButton('💰 Balance')
-    btn3, btn4 = types.KeyboardButton('📈 Live P&L'), types.KeyboardButton('👤 Profile')
-    btn5, btn6 = types.KeyboardButton('🚨 EXIT ALL'), types.KeyboardButton('🔗 Login Link')
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+    btns = [types.KeyboardButton(x) for x in ['🚀 Pick Stocks', '💰 Balance', '📈 Live P&L', '👤 Profile', '🚨 EXIT ALL', '🔗 Login Link']]
+    markup.add(*btns)
     return markup
 
-# --- TOKEN STORAGE ---
+# --- HELPERS ---
 def save_token(t):
     with open(TOKEN_FILE, "w") as f: f.write(t)
 
@@ -77,12 +75,12 @@ def exit_all_positions():
 # --- TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['start'])
 def welcome(m):
-    bot.send_message(CHAT_ID, "🚀 Pro Bot Started with New Token!\nSystem Active on Render.", reply_markup=pro_menu())
+    bot.send_message(CHAT_ID, "🚀 Pro Bot Live on Render!\nSystem Ready.", reply_markup=pro_menu())
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
     global fyers
-    if str(message.chat.id) != CHAT_ID: return # Security: Only you can use it
+    if str(message.chat.id) != CHAT_ID: return
     
     text = message.text
     if text == '🚀 Pick Stocks':
@@ -137,5 +135,4 @@ if __name__ == "__main__":
             if fyers.get_profile().get('s') == 'ok': print("Auto-login success")
         except: print("Token expired")
     
-    print("Bot is starting...")
     bot.infinity_polling(skip_pending=True)
