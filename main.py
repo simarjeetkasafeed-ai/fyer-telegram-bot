@@ -7,7 +7,7 @@ from fyers_apiv3 import fyersModel
 from flask import Flask
 
 # --- 1. CONFIGURATION ---
-TOKEN = '8644451164:AAHWcuh8cnIMZ76-wooN4rQAbdXoFzxku-M'
+TOKEN = '8644451164:AAH75tUUN7ljuxu55hx7Ek11osb1EEi4bmw'
 APP_ID = 'CI0NFNURCW-100' 
 SECRET_KEY = 'H7RXH9IXJT'
 CHAT_ID = '944397272'
