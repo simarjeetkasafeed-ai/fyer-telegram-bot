@@ -4,7 +4,7 @@ import threading
 from fyers_apiv3 import fyersModel
 from flask import Flask
 
-# --- CONFIG ---
+# --- 1. CONFIGURATION ---
 TOKEN = '8644451164:AAElOSx3cYqrxUzBeUCxr-PT5oE9yVgFBGY'
 APP_ID = 'CI0NFNURCW-100'
 SECRET_KEY = 'H7RXH9IXJT'
@@ -14,19 +14,19 @@ REDIRECT_URI = 'https://trade.fyers.in/api-login/redirect-uri/index.html'
 bot = telebot.TeleBot(TOKEN)
 fyers = None
 
-# Render Server
+# --- FLASK FOR RENDER ---
 app = Flask('')
+
 @app.route('/')
-def home(): return "Bot is Online!"
+def home():
+    return "Bot is Online!"
 
-def run_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# --- COMMANDS ---
+# --- BOT HANDLERS ---
 @bot.message_handler(commands=['start'])
 def welcome(m):
-    bot.send_message(CHAT_ID, "🚀 Pro Bot Live on Render!\n\n1. Pehle '🔗 Login Link' se login karein.\n2. Fir '/connect <auth_code>' bhejein.")
+    # Debug print for Render logs
+    print(f"Start command received from {m.chat.id}")
+    bot.send_message(CHAT_ID, "🚀 Pro Bot Live on Render!\nReady for Trading.")
 
 @bot.message_handler(commands=['connect'])
 def connect_fyers(m):
@@ -34,9 +34,9 @@ def connect_fyers(m):
     try:
         args = m.text.split()
         if len(args) < 2:
-            bot.send_message(CHAT_ID, "⚠️ Format: /connect <auth_code_yahan>")
+            bot.send_message(CHAT_ID, "⚠️ Format: /connect <auth_code>")
             return
-
+        
         auth_code = args[1]
         session = fyersModel.SessionModel(
             client_id=APP_ID, secret_key=SECRET_KEY,
@@ -48,19 +48,22 @@ def connect_fyers(m):
         if res.get('s') == 'ok':
             tk = res.get('access_token')
             fyers = fyersModel.FyersModel(client_id=APP_ID, token=tk, log_path="")
-            bot.send_message(CHAT_ID, "✅ BINGO! Login Successful. Ab aap trades le sakte hain.")
+            bot.send_message(CHAT_ID, "✅ BINGO! Bot Connected.")
         else:
-            # YE LINE BATAYEGI KI KYUN CONNECT NAHI HUA
-            bot.send_message(CHAT_ID, f"❌ Fyers Error: {res.get('message')}\nCode: {res.get('code')}")
-            
+            bot.send_message(CHAT_ID, f"❌ Fyers Error: {res.get('message')}")
     except Exception as e:
         bot.send_message(CHAT_ID, f"⚠️ Script Error: {str(e)}")
 
-@bot.message_handler(func=lambda m: m.text == '🔗 Login Link')
-def send_link(m):
-    session = fyersModel.SessionModel(client_id=APP_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type='code', grant_type='authorization_code')
-    bot.send_message(CHAT_ID, f"🔗 Login Here:\n{session.generate_authcode()}")
+# --- STARTUP LOGIC ---
+def run_bot():
+    print("Starting Telegram Polling...")
+    bot.infinity_polling(skip_pending=True)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_server).start()
-    bot.infinity_polling(skip_pending=True)
+    # Flask ko thread mein nahi, seedha chalne dete hain agar manual run ho
+    # Lekin Render par Gunicorn ise handle karega.
+    t = threading.Thread(target=run_bot)
+    t.start()
+    
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
