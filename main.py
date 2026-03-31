@@ -2,6 +2,10 @@ import os
 import telebot
 import threading
 import urllib.parse
+import requests
+import time
+from datetime import datetime
+import pytz
 from fyers_apiv3 import fyersModel
 from flask import Flask
 from telebot import types
@@ -12,103 +16,107 @@ APP_ID        = os.environ.get("FYERS_APP_ID")
 SECRET_KEY    = os.environ.get("FYERS_SECRET_KEY")
 CHAT_ID       = os.environ.get("CHAT_ID")
 REDIRECT_URI  = "https://trade.fyers.in/api-login/redirect-uri/index.html"
+IST           = pytz.timezone("Asia/Kolkata")
 
 bot   = telebot.TeleBot(TOKEN)
 fyers = None
 app   = Flask('')
 
-@app.route('/')
-def home(): return "Bot is Online"
+# --- NSE LIVE STATS & DIVERGENCE LOGIC ---
+def get_institutional_stats():
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        
+        # 1. Broad Market Breadth (Nifty 500)
+        m_url = "https://www.nseindia.com/api/marketStatus"
+        m_data = session.get(m_url, headers=headers, timeout=10).json()
+        adv, dec = 0, 0
+        for m in m_data['marketState']:
+            if m['index'] == 'NIFTY 500':
+                adv, dec = m['advances'], m['declines']
 
-# --- KEYBOARD SHORTCUTS ---
+        # 2. Sectoral Divergence Analysis
+        s_url = "https://www.nseindia.com/api/allIndices"
+        s_data = session.get(s_url, headers=headers, timeout=10).json()
+        
+        sector_report = ""
+        sectors_to_scan = ['NIFTY BANK', 'NIFTY IT', 'NIFTY AUTO', 'NIFTY METAL', 'NIFTY PHARMA', 'NIFTY FMCG']
+        
+        for s in s_data['data']:
+            if s['index'] in sectors_to_scan:
+                idx_name = s['index']
+                p_chg = s['pChange']
+                # Divergence Check: Advances vs Declines within sector
+                s_adv = int(s['advances'])
+                s_dec = int(s['declines'])
+                total = s_adv + s_dec
+                
+                status_icon = "🟢" if p_chg > 0 else "🔴"
+                divergence_msg = ""
+                
+                # Divergence Logic: If Index is UP but more than 50% stocks are RED
+                if p_chg > 0.5 and s_dec > s_adv:
+                    divergence_msg = f"\n⚠️ <b>Divergence:</b> {idx_name} is manipulated by heavyweights! Avoid Longs."
+                elif p_chg < -0.5 and s_adv > s_dec:
+                    divergence_msg = f"\n⚠️ <b>Divergence:</b> Short covering or manipulation. Avoid Shorts."
+
+                sector_report += f"{status_icon} <b>{idx_name}:</b> {p_chg}% (A:{s_adv}/D:{s_dec}){divergence_msg}\n"
+
+        report = (
+            f"<b>🏛️ Institutional Market Stats</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌍 <b>Broad Market (Nifty 500):</b>\n"
+            f"✅ Advances: {adv} | ❌ Declines: {dec}\n"
+            f"<i>Trend: {'Bullish' if adv > dec else 'Bearish'}</i>\n\n"
+            f"🏗️ <b>Sectoral Analysis:</b>\n{sector_report}\n"
+            f"🎯 <b>Strategy:</b> Trade in the direction of Breadth + Sector Strength."
+        )
+        return report
+    except Exception as e:
+        return f"❌ NSE API Error: {str(e)}"
+
+# --- KEYBOARD ---
 def main_menu():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton('🔗 Login')
-    btn2 = types.KeyboardButton('💰 Funds')
-    btn3 = types.KeyboardButton('📈 Market')
-    btn4 = types.KeyboardButton('📋 Help')
-    markup.add(btn1, btn2, btn3, btn4)
+    markup.add('🔗 Login', '📊 Stats', '💰 Funds', '📈 Market', '📋 Help')
     return markup
 
-# --- COMMANDS ---
+# --- AUTOMATIC TASK (9:26 AM) ---
+def auto_morning_report():
+    sent_today = False
+    while True:
+        try:
+            now = datetime.now(IST)
+            if now.hour == 9 and now.minute == 26 and now.weekday() < 5:
+                if not sent_today:
+                    stats = get_institutional_stats()
+                    bot.send_message(CHAT_ID, stats, parse_mode="HTML")
+                    sent_today = True
+            else:
+                sent_today = False
+            time.sleep(30)
+        except:
+            time.sleep(60)
 
+# --- BOT HANDLERS ---
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
-    # HTML use kar rahe hain yahan
-    bot.send_message(CHAT_ID, "<b>🚀 Pro Bot Online!</b>\nNeeche diye buttons use karein:", 
-                     parse_mode="HTML", reply_markup=main_menu())
+    bot.send_message(CHAT_ID, "🚀 <b>Bot Ready!</b> Use buttons below:", parse_mode="HTML", reply_markup=main_menu())
 
-@bot.message_handler(func=lambda m: m.text == '🔗 Login' or m.text == '/login')
-def cmd_login(m):
-    try:
-        base_url = "https://api-t1.fyers.in/api/v3/generate-authcode"
-        params = {"client_id": APP_ID, "redirect_uri": REDIRECT_URI, "response_type": "code", "state": "None"}
-        auth_url = base_url + "?" + urllib.parse.urlencode(params)
-        
-        # URL ko simple text mein bhej rahe hain taaki parse error na aaye
-        bot.send_message(CHAT_ID, f"<b>🔑 Login Link:</b>\n\n{auth_url}", parse_mode="HTML")
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
+@bot.message_handler(func=lambda m: m.text == '📊 Stats')
+def cmd_stats(m):
+    bot.send_message(CHAT_ID, "⏳ Fetching Broad Market Stats...")
+    report = get_institutional_stats()
+    bot.send_message(CHAT_ID, report, parse_mode="HTML")
 
-@bot.message_handler(commands=['connect'])
-def cmd_connect(m):
-    global fyers
-    try:
-        args = m.text.split(None, 1)
-        if len(args) < 2:
-            bot.send_message(CHAT_ID, "⚠️ Use: <code>/connect URL_YAHAN</code>", parse_mode="HTML")
-            return
-        
-        inp = args[1].strip()
-        auth_code = inp.split("auth_code=")[1].split("&")[0] if "auth_code=" in inp else inp
+# ... (Include your existing /login, /connect, /funds handlers here) ...
 
-        session = fyersModel.SessionModel(client_id=APP_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
-        session.set_token(auth_code)
-
-        try:
-            res = session.generate_access_token()
-        except:
-            res = session.generate_token()
-
-        if res.get("s") == "ok":
-            tk = res.get("access_token")
-            fyers = fyersModel.FyersModel(client_id=APP_ID, token=tk, is_async=False, log_path="")
-            bot.send_message(CHAT_ID, "<b>✅ Connected!</b> Ab Funds check karein.", parse_mode="HTML")
-        else:
-            bot.send_message(CHAT_ID, f"❌ Fail: {res.get('message')}")
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
-
-@bot.message_handler(func=lambda m: m.text == '💰 Funds' or m.text == '/funds')
-def cmd_funds(m):
-    if not fyers:
-        bot.send_message(CHAT_ID, "❌ Pehle Login karein!")
-        return
-    try:
-        res = fyers.funds()
-        bal = res.get("fund_limit", [{}])[0].get("equityAmount", 0)
-        bot.send_message(CHAT_ID, f"<b>💰 Balance:</b> ₹{bal}", parse_mode="HTML")
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
-
-@bot.message_handler(func=lambda m: m.text == '📈 Market' or m.text == '/market')
-def cmd_market(m):
-    if not fyers:
-        bot.send_message(CHAT_ID, "❌ Login Required!")
-        return
-    try:
-        res = fyers.quotes({"symbols": "NSE:NIFTY50-INDEX"})
-        nifty = res["d"][0]["v"]
-        bot.send_message(CHAT_ID, f"<b>📈 Nifty 50:</b> {nifty['lp']} ({nifty['chp']}%)", parse_mode="HTML")
-    except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
-
-@bot.message_handler(func=lambda m: m.text == '📋 Help' or m.text == '/help')
-def cmd_help(m):
-    bot.send_message(CHAT_ID, "<b>📌 Commands:</b>\n/login - Link ke liye\n/connect - URL paste karein\n/funds - Balance\n/market - Nifty", parse_mode="HTML")
-
-# --- RUN ---
 if __name__ == "__main__":
+    # Start the morning scanner thread
+    threading.Thread(target=auto_morning_report, daemon=True).start()
+    
     port = int(os.environ.get("PORT", 10000))
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
     bot.infinity_polling(skip_pending=True)
