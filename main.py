@@ -10,8 +10,8 @@ import pytz
 # ============================================================
 # CONFIG — Render Environment Variables se aata hai
 # ============================================================
-TOKEN    = os.environ.get("8644451164:AAElOSx3cYqrxUzBeUCxr-PT5oE9yVgFBGY")
-CHAT_ID  = os.environ.get("944397272")
+TOKEN    = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID  = os.environ.get("CHAT_ID")
 IST      = pytz.timezone("Asia/Kolkata")
 
 if not TOKEN:
