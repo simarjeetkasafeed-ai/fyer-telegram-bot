@@ -4,9 +4,9 @@ import threading
 import urllib.parse
 from fyers_apiv3 import fyersModel
 from flask import Flask
-from telebot import types # Buttons ke liye
+from telebot import types
 
-# --- CONFIG (Environment Variables) ---
+# --- CONFIG ---
 TOKEN         = os.environ.get("TELEGRAM_TOKEN")
 APP_ID        = os.environ.get("FYERS_APP_ID")
 SECRET_KEY    = os.environ.get("FYERS_SECRET_KEY")
@@ -23,7 +23,6 @@ def home(): return "Bot is Online"
 # --- KEYBOARD SHORTCUTS ---
 def main_menu():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    # Buttons ke naam short aur simple
     btn1 = types.KeyboardButton('🔗 Login')
     btn2 = types.KeyboardButton('💰 Funds')
     btn3 = types.KeyboardButton('📈 Market')
@@ -35,20 +34,21 @@ def main_menu():
 
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
-    # Start bhejte hi buttons aa jayenge
-    bot.send_message(CHAT_ID, "🚀 *Pro Bot Online!*\nNeeche diye buttons use karein:", 
-                     parse_mode="Markdown", reply_markup=main_menu())
+    # HTML use kar rahe hain yahan
+    bot.send_message(CHAT_ID, "<b>🚀 Pro Bot Online!</b>\nNeeche diye buttons use karein:", 
+                     parse_mode="HTML", reply_markup=main_menu())
 
-# Login button ya command dono par chalega
 @bot.message_handler(func=lambda m: m.text == '🔗 Login' or m.text == '/login')
 def cmd_login(m):
     try:
         base_url = "https://api-t1.fyers.in/api/v3/generate-authcode"
         params = {"client_id": APP_ID, "redirect_uri": REDIRECT_URI, "response_type": "code", "state": "None"}
         auth_url = base_url + "?" + urllib.parse.urlencode(params)
-        bot.send_message(CHAT_ID, f"🔑 *Login Link:*\n{auth_url}", parse_mode="Markdown")
+        
+        # URL ko simple text mein bhej rahe hain taaki parse error na aaye
+        bot.send_message(CHAT_ID, f"<b>🔑 Login Link:</b>\n\n{auth_url}", parse_mode="HTML")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
 
 @bot.message_handler(commands=['connect'])
 def cmd_connect(m):
@@ -56,7 +56,7 @@ def cmd_connect(m):
     try:
         args = m.text.split(None, 1)
         if len(args) < 2:
-            bot.send_message(CHAT_ID, "⚠️ Use: `/connect URL_YAHAN`", parse_mode="Markdown")
+            bot.send_message(CHAT_ID, "⚠️ Use: <code>/connect URL_YAHAN</code>", parse_mode="HTML")
             return
         
         inp = args[1].strip()
@@ -65,7 +65,6 @@ def cmd_connect(m):
         session = fyersModel.SessionModel(client_id=APP_ID, secret_key=SECRET_KEY, redirect_uri=REDIRECT_URI, response_type="code", grant_type="authorization_code")
         session.set_token(auth_code)
 
-        # Fix for Attribute Error (Dono methods try karega)
         try:
             res = session.generate_access_token()
         except:
@@ -74,11 +73,11 @@ def cmd_connect(m):
         if res.get("s") == "ok":
             tk = res.get("access_token")
             fyers = fyersModel.FyersModel(client_id=APP_ID, token=tk, is_async=False, log_path="")
-            bot.send_message(CHAT_ID, "✅ *Connected!* Ab Funds check karein.", parse_mode="Markdown")
+            bot.send_message(CHAT_ID, "<b>✅ Connected!</b> Ab Funds check karein.", parse_mode="HTML")
         else:
             bot.send_message(CHAT_ID, f"❌ Fail: {res.get('message')}")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
 
 @bot.message_handler(func=lambda m: m.text == '💰 Funds' or m.text == '/funds')
 def cmd_funds(m):
@@ -87,11 +86,10 @@ def cmd_funds(m):
         return
     try:
         res = fyers.funds()
-        # Equity amount nikalne ka simple logic
         bal = res.get("fund_limit", [{}])[0].get("equityAmount", 0)
-        bot.send_message(CHAT_ID, f"💰 *Balance:* ₹{bal}", parse_mode="Markdown")
+        bot.send_message(CHAT_ID, f"<b>💰 Balance:</b> ₹{bal}", parse_mode="HTML")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
 
 @bot.message_handler(func=lambda m: m.text == '📈 Market' or m.text == '/market')
 def cmd_market(m):
@@ -101,13 +99,13 @@ def cmd_market(m):
     try:
         res = fyers.quotes({"symbols": "NSE:NIFTY50-INDEX"})
         nifty = res["d"][0]["v"]
-        bot.send_message(CHAT_ID, f"📈 *Nifty 50:* {nifty['lp']} ({nifty['chp']}%)", parse_mode="Markdown")
+        bot.send_message(CHAT_ID, f"<b>📈 Nifty 50:</b> {nifty['lp']} ({nifty['chp']}%)", parse_mode="HTML")
     except Exception as e:
-        bot.send_message(CHAT_ID, f"❌ Error: {e}")
+        bot.send_message(CHAT_ID, f"❌ Error: {str(e)}")
 
 @bot.message_handler(func=lambda m: m.text == '📋 Help' or m.text == '/help')
 def cmd_help(m):
-    bot.send_message(CHAT_ID, "📌 *Commands:*\n/login - Link ke liye\n/connect - URL paste karein\n/funds - Balance ke liye\n/market - Nifty info", parse_mode="Markdown")
+    bot.send_message(CHAT_ID, "<b>📌 Commands:</b>\n/login - Link ke liye\n/connect - URL paste karein\n/funds - Balance\n/market - Nifty", parse_mode="HTML")
 
 # --- RUN ---
 if __name__ == "__main__":
