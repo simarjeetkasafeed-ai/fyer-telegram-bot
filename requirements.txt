@@ -1,4 +1,5 @@
 pyTelegramBotAPI
 fyers-apiv3
 flask
-gunicorn
+requests
+pytz
