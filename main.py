@@ -2,470 +2,348 @@ import os
 import telebot
 import threading
 import time
-import requests
-from flask import Flask
-from datetime import datetime, date
 import pytz
+from datetime import datetime, date
+from fyers_apiv3 import fyersModel
+from flask import Flask
 
-# ============================================================
-# CONFIG — Render Environment Variables se aata hai
-# ============================================================
-TOKEN    = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID  = os.environ.get("CHAT_ID")
-IST      = pytz.timezone("Asia/Kolkata")
+TOKEN        = os.environ.get("TELEGRAM_TOKEN")
+APP_ID       = os.environ.get("FYERS_APP_ID")
+SECRET_KEY   = os.environ.get("FYERS_SECRET_KEY")
+CHAT_ID      = os.environ.get("CHAT_ID")
+REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
+IST          = pytz.timezone("Asia/Kolkata")
 
-if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable not set!")
-if not CHAT_ID:
-    raise ValueError("CHAT_ID environment variable not set!")
+bot   = telebot.TeleBot(TOKEN)
+fyers = None
+app   = Flask('')
 
-bot = telebot.TeleBot(TOKEN)
-app = Flask('')
+NSE_HOLIDAYS_2026 = [
+    "2026-01-15","2026-01-26","2026-03-03","2026-03-26",
+    "2026-03-31","2026-04-03","2026-04-14","2026-05-01",
+    "2026-05-28","2026-06-26","2026-09-14","2026-10-02",
+    "2026-10-20","2026-11-10","2026-11-24","2026-12-25"
+]
 
-# ============================================================
-# FLASK — Render ke liye alive rakhne ka server
-# ============================================================
 @app.route('/')
 def home():
     now = datetime.now(IST).strftime("%d-%b-%Y %H:%M:%S IST")
-    return f"Trading Bot Running! Time: {now}"
+    st  = "Connected" if fyers else "Not Connected"
+    return f"Trading Bot Running! Time: {now} | Fyers: {st}"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# ============================================================
-# NSE HOLIDAY LIST 2026
-# ============================================================
-NSE_HOLIDAYS_2026 = [
-    "2026-01-15", "2026-01-26", "2026-03-03",
-    "2026-03-26", "2026-03-31", "2026-04-03",
-    "2026-04-14", "2026-05-01", "2026-05-28",
-    "2026-06-26", "2026-09-14", "2026-10-02",
-    "2026-10-20", "2026-11-10", "2026-11-24",
-    "2026-12-25"
-]
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-def send_alert(message):
-    """Telegram pe message bhejo"""
+def send(msg):
     try:
-        bot.send_message(CHAT_ID, message, parse_mode="Markdown")
-        print(f"Alert sent: {message[:50]}...")
+        bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
     except Exception as e:
-        print(f"Alert failed: {e}")
+        print(f"Send error: {e}")
 
 def is_market_open():
-    """Aaj market open hai ya nahi"""
     now     = datetime.now(IST)
     today   = date.today().strftime("%Y-%m-%d")
     weekday = now.weekday()
-
-    # Weekend check
     if weekday >= 5:
-        return False, "Weekend — market closed"
-
-    # Holiday check
+        return False, "Weekend"
     if today in NSE_HOLIDAYS_2026:
-        return False, f"NSE Holiday today!"
-
-    # Time check
-    market_start = now.replace(hour=9,  minute=15, second=0)
-    market_end   = now.replace(hour=15, minute=30, second=0)
-
-    if now < market_start:
+        return False, "NSE Holiday"
+    start = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    end   = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if now < start:
         return False, "Market not opened yet"
-    if now > market_end:
+    if now > end:
         return False, "Market closed for today"
+    return True, "Market LIVE"
 
-    return True, "Market is LIVE"
-
-def get_nifty_data():
-    """Nifty + VIX data fetch karo"""
+def get_live_data():
+    if not fyers:
+        return None, "Fyers not connected! Send /login"
     try:
-        fyers_token   = os.environ.get("FYERS_ACCESS_TOKEN", "")
-        fyers_client  = os.environ.get("FYERS_CLIENT_ID", "")
-
-        if not fyers_token or not fyers_client:
-            return None, "Fyers token not set"
-
-        headers = {
-            "Authorization": f"{fyers_client}:{fyers_token}",
-            "Content-Type": "application/json"
-        }
-
-        # Nifty quote
-        url    = "https://api.fyers.in/api/v3/quotes"
-        params = {"symbols": "NSE:NIFTY50-INDEX,NSE:INDIAVIX-INDEX"}
-        res    = requests.get(url, headers=headers, params=params)
-        data   = res.json()
-
-        if data.get("code") != 200:
-            return None, f"API error: {data.get('message')}"
-
-        nifty = data["d"][0]["v"]
-        vix   = data["d"][1]["v"]
-
+        res   = fyers.quotes({"symbols": "NSE:NIFTY50-INDEX,NSE:INDIAVIX-INDEX"})
+        nifty = res["d"][0]["v"]
+        vix   = res["d"][1]["v"]
+        gap   = round((nifty["open_price"] - nifty["prev_close_price"]) / nifty["prev_close_price"] * 100, 2)
+        vix_dir = "Rising" if vix["lp"] > vix["open_price"] else "Falling"
+        v = vix["lp"]
+        if v < 16:
+            mode = "NORMAL - Iron Condor"
+        elif v > 19 and vix_dir == "Rising":
+            mode = "PANIC - Buy Straddle"
+        elif v > 19 and vix_dir == "Falling":
+            mode = "SKIP - Volatility Crush"
+        else:
+            mode = "SKIP - VIX Danger Zone"
+        if abs(gap) > 0.5 and "NORMAL" in mode:
+            mode = "SKIP - Big Gap"
         return {
-            "nifty_lp"   : nifty["lp"],
-            "nifty_open" : nifty["open_price"],
-            "nifty_prev" : nifty["prev_close_price"],
-            "nifty_chp"  : nifty["chp"],
-            "vix_lp"     : vix["lp"],
-            "vix_open"   : vix["open_price"],
+            "nifty_lp"  : nifty["lp"],
+            "nifty_chp" : nifty["chp"],
+            "nifty_ch"  : nifty["ch"],
+            "nifty_high": nifty["high_price"],
+            "nifty_low" : nifty["low_price"],
+            "vix_lp"    : vix["lp"],
+            "vix_open"  : vix["open_price"],
+            "vix_dir"   : vix_dir,
+            "gap"       : gap,
+            "mode"      : mode,
+            "atm_nifty" : round(nifty["lp"] / 50)  * 50,
+            "atm_bn"    : round(nifty["lp"] / 100) * 100,
         }, "ok"
-
     except Exception as e:
         return None, str(e)
 
-def analyze_market(data):
-    """Market analysis aur bot decision"""
-    nifty = data["nifty_lp"]
-    vix   = data["vix_lp"]
-    v_open= data["vix_open"]
-    gap   = round((data["nifty_open"] - data["nifty_prev"])
-                  / data["nifty_prev"] * 100, 2)
-
-    vix_dir = "Rising" if vix > v_open else "Falling"
-
-    # Bot decision logic
-    if vix < 16:
-        mode = "NORMAL — Iron Condor"
-    elif vix > 19 and vix_dir == "Rising":
-        mode = "PANIC — Buy Straddle"
-    elif vix > 19 and vix_dir == "Falling":
-        mode = "SKIP — Volatility Crush"
-    else:
-        mode = "SKIP — VIX Danger Zone"
-
-    # Gap filter
-    gap_status = "OK"
-    if abs(gap) > 0.5:
-        if mode == "NORMAL — Iron Condor":
-            mode = "SKIP — Big Gap"
-        gap_status = "CAUTION"
-
-    return {
-        "nifty"     : nifty,
-        "vix"       : vix,
-        "vix_dir"   : vix_dir,
-        "gap"       : gap,
-        "gap_status": gap_status,
-        "mode"      : mode,
-        "atm_strike": round(nifty / 50) * 50
-    }
-
-# ============================================================
-# TELEGRAM COMMANDS
-# ============================================================
 @bot.message_handler(commands=['start'])
 def cmd_start(m):
-    bot.send_message(m.chat.id,
+    print(f"Start from {m.chat.id}")
+    send(
         "🚀 *Trading Bot Online!*\n\n"
-        "Commands:\n"
-        "/status — Bot aur market status\n"
-        "/market — Live Nifty + VIX\n"
-        "/decision — Aaj ka trading decision\n"
-        "/help — Sabhi commands\n\n"
-        "_Simarjeet Singh Trading Bot v2.2_",
-        parse_mode="Markdown"
+        "Pehle Fyers connect karo:\n"
+        "1️⃣ /login bhejo\n"
+        "2️⃣ Browser mein login karo\n"
+        "3️⃣ /connect CODE bhejo\n\n"
+        "Commands: /help"
     )
 
 @bot.message_handler(commands=['help'])
 def cmd_help(m):
-    bot.send_message(m.chat.id,
-        "📋 *Available Commands:*\n\n"
-        "/start — Bot start karo\n"
-        "/status — Market open hai ya nahi\n"
-        "/market — Live Nifty + VIX data\n"
-        "/decision — Aaj ka trading mode\n"
-        "/strike — ATM strike price\n"
+    send(
+        "📋 *All Commands:*\n\n"
+        "*Login:*\n"
+        "/login — Login URL pao\n"
+        "/connect CODE — Connect karo\n\n"
+        "*Market:*\n"
+        "/market — Live Nifty + VIX\n"
+        "/decision — Aaj ka mode\n"
+        "/strike — ATM strikes\n"
+        "/status — Market status\n\n"
+        "*Safety:*\n"
         "/stop — Emergency stop\n"
-        "/ping — Bot alive check",
-        parse_mode="Markdown"
+        "/ping — Bot alive check\n"
+        "/connected — Fyers status"
     )
 
 @bot.message_handler(commands=['ping'])
 def cmd_ping(m):
     now = datetime.now(IST).strftime("%H:%M:%S IST")
-    bot.send_message(m.chat.id,
-        f"✅ Bot alive!\nTime: {now}"
-    )
+    send(f"✅ Bot alive!\n⏰ {now}")
+
+@bot.message_handler(commands=['connected'])
+def cmd_connected(m):
+    if fyers:
+        send("✅ *Fyers Connected!*\nBot ready hai.")
+    else:
+        send("❌ *Not Connected!*\n/login bhejo pehle.")
+
+@bot.message_handler(commands=['login'])
+def cmd_login(m):
+    try:
+        session  = fyersModel.SessionModel(
+            client_id=APP_ID, secret_key=SECRET_KEY,
+            redirect_uri=REDIRECT_URI,
+            response_type="code", grant_type="authorization_code"
+        )
+        auth_url = session.generate_authcode()
+        send(
+            "🔑 *Login Steps:*\n\n"
+            "1️⃣ Niche link open karo\n"
+            "2️⃣ Fyers mein login karo\n"
+            "3️⃣ Browser ka *poora URL* copy karo\n"
+            "4️⃣ Yahan bhejo:\n"
+            "`/connect PASTE_URL_HERE`\n\n"
+            f"🌐 *Login Link:*\n{auth_url}"
+        )
+    except Exception as e:
+        send(f"❌ Login URL failed!\n{str(e)}")
+
+@bot.message_handler(commands=['connect'])
+def cmd_connect(m):
+    global fyers
+    try:
+        args = m.text.split(None, 1)
+        if len(args) < 2:
+            send("⚠️ Format:\n`/connect YOUR_AUTH_CODE`\n\nYa poora URL paste karo")
+            return
+        inp = args[1].strip()
+        if "auth_code=" in inp:
+            auth_code = inp.split("auth_code=")[1].split("&")[0]
+        else:
+            auth_code = inp
+        send("⏳ Connecting to Fyers...")
+        session = fyersModel.SessionModel(
+            client_id=APP_ID, secret_key=SECRET_KEY,
+            redirect_uri=REDIRECT_URI,
+            response_type="code", grant_type="authorization_code"
+        )
+        session.set_token(auth_code)
+        res = session.generate_token()
+        if res.get("s") == "ok" or "access_token" in res:
+            token = res.get("access_token")
+            fyers = fyersModel.FyersModel(
+                client_id=APP_ID, is_async=False,
+                token=token, log_path=""
+            )
+            profile = fyers.get_profile()
+            name    = profile.get("data", {}).get("name", "Trader")
+            send(
+                f"✅ *BINGO! Connected!*\n\n"
+                f"👤 {name}\n"
+                f"🔑 Token active\n\n"
+                f"Ab use karo:\n"
+                f"/market — Live data\n"
+                f"/decision — Aaj ka mode"
+            )
+            print(f"Fyers connected: {name}")
+        else:
+            send(f"❌ *Failed!*\nError: {res.get('message', str(res))}\n\nDobara /login try karo")
+    except Exception as e:
+        send(f"❌ Error: {str(e)}\n\n/login se dobara try karo")
 
 @bot.message_handler(commands=['status'])
 def cmd_status(m):
-    open_status, reason = is_market_open()
+    open_st, reason = is_market_open()
     now = datetime.now(IST).strftime("%H:%M:%S IST")
-
-    if open_status:
-        msg = f"✅ *Market OPEN*\n⏰ {now}\n📊 Trading active"
+    fst = "✅ Connected" if fyers else "❌ Not connected"
+    if open_st:
+        send(f"✅ *Market OPEN*\n⏰ {now}\n🔗 Fyers: {fst}")
     else:
-        msg = f"🔴 *Market Closed*\n⏰ {now}\n📋 Reason: {reason}"
-
-    bot.send_message(m.chat.id, msg, parse_mode="Markdown")
+        send(f"🔴 *Market Closed*\n⏰ {now}\nReason: {reason}\n🔗 Fyers: {fst}")
 
 @bot.message_handler(commands=['market'])
 def cmd_market(m):
-    bot.send_message(m.chat.id, "📊 Fetching live data...")
-
-    data, status = get_nifty_data()
-
-    if not data:
-        bot.send_message(m.chat.id,
-            f"❌ Data fetch failed!\nReason: {status}\n\n"
-            "Check Fyers token in Render environment variables."
-        )
+    if not fyers:
+        send("❌ Pehle /login karo!")
         return
-
-    analysis = analyze_market(data)
-    chg_emoji = "🟢" if data["nifty_chp"] >= 0 else "🔴"
-
-    msg = (
-        f"📈 *Live Market Data*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"*Nifty 50:* {analysis['nifty']:,.1f} {chg_emoji}\n"
+    send("📊 Fetching...")
+    data, status = get_live_data()
+    if not data:
+        send(f"❌ {status}")
+        return
+    e = "🟢" if data["nifty_chp"] >= 0 else "🔴"
+    send(
+        f"📈 *Live Market*\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"*Nifty:* {data['nifty_lp']:,.1f} {e}\n"
         f"*Change:* {data['nifty_chp']:+.2f}%\n"
-        f"*Gap Open:* {analysis['gap']:+.2f}%\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"*India VIX:* {analysis['vix']:.2f}\n"
-        f"*VIX Direction:* {analysis['vix_dir']}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"*ATM Strike:* {analysis['atm_strike']}\n"
-        f"*Bot Mode:* `{analysis['mode']}`"
+        f"*High:* {data['nifty_high']:,.1f}\n"
+        f"*Low:* {data['nifty_low']:,.1f}\n"
+        f"*Gap:* {data['gap']:+.2f}%\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"*VIX:* {data['vix_lp']:.2f} ({data['vix_dir']})\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"*Mode:* `{data['mode']}`"
     )
-
-    bot.send_message(m.chat.id, msg, parse_mode="Markdown")
 
 @bot.message_handler(commands=['decision'])
 def cmd_decision(m):
-    open_status, reason = is_market_open()
-
-    if not open_status:
-        bot.send_message(m.chat.id,
-            f"🔴 Market closed!\nReason: {reason}\n\n"
-            "Decision only available during market hours."
-        )
+    if not fyers:
+        send("❌ Pehle /login karo!")
         return
-
-    data, status = get_nifty_data()
-
+    open_st, reason = is_market_open()
+    if not open_st:
+        send(f"🔴 Market closed!\n{reason}")
+        return
+    data, status = get_live_data()
     if not data:
-        bot.send_message(m.chat.id,
-            f"❌ Cannot fetch data!\n{status}"
-        )
+        send(f"❌ {status}")
         return
-
-    analysis = analyze_market(data)
-    mode     = analysis["mode"]
-
+    mode = data["mode"]
     if "NORMAL" in mode:
-        emoji  = "🟢"
-        action = "Iron Condor setup karo\nSell CE + PE spreads"
+        e = "🟢"
+        action = (f"*Iron Condor:*\nSell CE: {data['atm_nifty']+200}\n"
+                  f"Buy CE: {data['atm_nifty']+300}\nSell PE: {data['atm_nifty']-200}\n"
+                  f"Buy PE: {data['atm_nifty']-300}\nLots: 65 units")
     elif "PANIC" in mode:
-        emoji  = "🚨"
-        action = "Buy Straddle!\nCE + PE dono kharido"
+        e = "🚨"
+        action = (f"*Straddle:*\nBuy CE: {data['atm_nifty']}CE\n"
+                  f"Buy PE: {data['atm_nifty']}PE\nLots: 65 units\nExit: 10:30 AM")
     else:
-        emoji  = "⛔"
-        action = "Aaj trade mat karo\nCapital safe rakho"
-
-    msg = (
-        f"{emoji} *Bot Decision*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        e = "⛔"
+        action = "Aaj trade mat karo!\nCapital safe rakho."
+    send(
+        f"{e} *Aaj Ka Decision*\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"*Mode:* `{mode}`\n\n"
-        f"*Action:* {action}\n\n"
-        f"*VIX:* {analysis['vix']:.2f} ({analysis['vix_dir']})\n"
-        f"*Gap:* {analysis['gap']:+.2f}%\n"
-        f"*ATM Strike:* {analysis['atm_strike']}"
+        f"{action}\n\n"
+        f"VIX: {data['vix_lp']:.2f} | Gap: {data['gap']:+.2f}%"
     )
-
-    bot.send_message(m.chat.id, msg, parse_mode="Markdown")
 
 @bot.message_handler(commands=['strike'])
 def cmd_strike(m):
-    data, status = get_nifty_data()
-
-    if not data:
-        bot.send_message(m.chat.id, f"❌ {status}")
+    if not fyers:
+        send("❌ Pehle /login karo!")
         return
-
-    nifty      = data["nifty_lp"]
-    atm        = round(nifty / 50) * 50
-    atm_bn     = round(nifty / 100) * 100
-
-    msg = (
+    data, status = get_live_data()
+    if not data:
+        send(f"❌ {status}")
+        return
+    send(
         f"🎯 *Strike Prices*\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"*Nifty Spot:* {nifty:,.1f}\n\n"
-        f"*Nifty ATM:* {atm}\n"
-        f"CE: {atm}CE  PE: {atm}PE\n\n"
-        f"*BankNifty ATM:* {atm_bn}\n"
-        f"CE: {atm_bn}CE  PE: {atm_bn}PE"
+        f"*Nifty Spot:* {data['nifty_lp']:,.1f}\n"
+        f"*Nifty ATM:* {data['atm_nifty']}\n"
+        f"CE: `NIFTY{data['atm_nifty']}CE`\n"
+        f"PE: `NIFTY{data['atm_nifty']}PE`\n\n"
+        f"*BankNifty ATM:* {data['atm_bn']}\n"
+        f"CE: `BANKNIFTY{data['atm_bn']}CE`\n"
+        f"PE: `BANKNIFTY{data['atm_bn']}PE`"
     )
-
-    bot.send_message(m.chat.id, msg, parse_mode="Markdown")
 
 @bot.message_handler(commands=['stop'])
 def cmd_stop(m):
-    bot.send_message(m.chat.id,
-        "🛑 *EMERGENCY STOP RECEIVED!*\n\n"
-        "⚠️ Please manually exit all positions\n"
-        "in Fyers One terminal immediately!\n\n"
-        "Bot monitoring paused.",
-        parse_mode="Markdown"
+    send(
+        "🛑 *EMERGENCY STOP!*\n\n"
+        "Fyers One app mein TURANT\n"
+        "saari positions exit karo!\n\n"
+        "Reconnect: /login"
     )
-    send_alert("🚨 EMERGENCY STOP activated by user!")
 
-# ============================================================
-# AUTO MORNING ALERT — 9:15 AM
-# ============================================================
-def morning_alert_loop():
-    """Har din 9:15 AM pe market alert bhejo"""
-    alert_sent_today = None
+@bot.message_handler(func=lambda m: True)
+def unknown(m):
+    send("❓ /help se commands dekho")
 
+def morning_reminder_loop():
+    reminded_today = None
     while True:
         try:
             now   = datetime.now(IST)
             today = now.date()
-
-            # 9:15 AM pe ek baar alert bhejo
-            if (now.hour == 9 and
-                now.minute == 15 and
-                alert_sent_today != today):
-
-                open_status, reason = is_market_open()
-
-                if open_status:
-                    data, status = get_nifty_data()
-
-                    if data:
-                        analysis = analyze_market(data)
-                        mode     = analysis["mode"]
-
-                        if "NORMAL" in mode:
-                            emoji = "🟢"
-                        elif "PANIC" in mode:
-                            emoji = "🚨"
-                        else:
-                            emoji = "⛔"
-
-                        send_alert(
-                            f"🌅 *Good Morning Simarjeet!*\n"
-                            f"━━━━━━━━━━━━━━━━━━\n"
-                            f"*Nifty:* {analysis['nifty']:,.1f}\n"
-                            f"*VIX:* {analysis['vix']:.2f} ({analysis['vix_dir']})\n"
-                            f"*Gap:* {analysis['gap']:+.2f}%\n\n"
-                            f"{emoji} *Today's Mode:* `{mode}`\n"
-                            f"*ATM Strike:* {analysis['atm_strike']}"
-                        )
-                    else:
-                        send_alert(
-                            "🌅 Good Morning!\n"
-                            "Market open hai!\n"
-                            "⚠️ Data fetch failed — check Fyers token"
-                        )
-                else:
-                    send_alert(f"🔴 Market Closed today\nReason: {reason}")
-
-                alert_sent_today = today
-
+            if (now.hour == 9 and now.minute == 0 and
+                now.weekday() < 5 and
+                today.strftime("%Y-%m-%d") not in NSE_HOLIDAYS_2026 and
+                reminded_today != today):
+                send(
+                    "🌅 *Good Morning Simarjeet!*\n\n"
+                    "Market 15 minute mein khulega!\n\n"
+                    "🔑 Pehle login karo:\n"
+                    "/login bhejo → connect karo\n\n"
+                    "Phir:\n"
+                    "/market — Live data\n"
+                    "/decision — Aaj ka mode"
+                )
+                reminded_today = today
             time.sleep(30)
-
         except Exception as e:
-            print(f"Morning alert error: {e}")
+            print(f"Morning error: {e}")
             time.sleep(60)
 
-# ============================================================
-# VIX SPIKE MONITOR — Every 5 mins during market
-# ============================================================
-def vix_monitor_loop():
-    """VIX spike detect karo aur alert bhejo"""
-    last_vix      = None
-    last_vix_open = None
-
-    while True:
-        try:
-            now          = datetime.now(IST)
-            open_status, _ = is_market_open()
-
-            if open_status and 9 <= now.hour < 15:
-                data, status = get_nifty_data()
-
-                if data:
-                    vix      = data["vix_lp"]
-                    vix_open = data["vix_open"]
-
-                    # VIX spike check (5%+ intraday)
-                    vix_spike = (vix - vix_open) / vix_open * 100
-
-                    if vix_spike > 5 and last_vix and vix > last_vix:
-                        send_alert(
-                            f"⚠️ *VIX SPIKE ALERT!*\n"
-                            f"VIX: {vix:.2f} (spike {vix_spike:.1f}%)\n"
-                            f"⛔ Exit all positions immediately!\n"
-                            f"Do NOT enter new trades!"
-                        )
-
-                    # VIX crossed above 19
-                    if (last_vix and last_vix <= 19 and vix > 19):
-                        send_alert(
-                            f"🚨 *VIX crossed 19!*\n"
-                            f"VIX: {vix:.2f}\n"
-                            f"Iron Condor danger zone!\n"
-                            f"Mode switching to PANIC"
-                        )
-
-                    last_vix      = vix
-                    last_vix_open = vix_open
-
-            time.sleep(300)  # Check every 5 minutes
-
-        except Exception as e:
-            print(f"VIX monitor error: {e}")
-            time.sleep(60)
-
-# ============================================================
-# MAIN — SAB KUCH SHURU KARO
-# ============================================================
 if __name__ == "__main__":
-
     print("=" * 50)
     print("TRADING BOT STARTING...")
     print("=" * 50)
-
-    # Flask server — background mein
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    print("Flask server started!")
-
-    # Morning alert loop — background mein
-    morning_thread = threading.Thread(target=morning_alert_loop)
-    morning_thread.daemon = True
-    morning_thread.start()
-    print("Morning alert loop started!")
-
-    # VIX monitor — background mein
-    vix_thread = threading.Thread(target=vix_monitor_loop)
-    vix_thread.daemon = True
-    vix_thread.start()
-    print("VIX monitor started!")
-
-    # Startup message
+    flask_t = threading.Thread(target=run_flask)
+    flask_t.daemon = True
+    flask_t.start()
+    print("Flask started!")
+    morning_t = threading.Thread(target=morning_reminder_loop)
+    morning_t.daemon = True
+    morning_t.start()
+    print("Morning reminder started!")
     try:
-        bot.send_message(CHAT_ID,
-            "🚀 *Trading Bot Online!*\n\n"
-            "Sab systems active hain:\n"
-            "✅ Telegram connected\n"
-            "✅ Morning alerts ready\n"
-            "✅ VIX monitor active\n\n"
-            "Commands ke liye /help bhejein",
-            parse_mode="Markdown"
-        )
+        send("🚀 *Bot Online!*\n/login bhejo Fyers connect karne ke liye")
     except Exception as e:
-        print(f"Startup message failed: {e}")
-
-    print("Telegram polling started...")
+        print(f"Startup msg error: {e}")
+    print("Polling started!")
     print("=" * 50)
     bot.infinity_polling(skip_pending=True)
